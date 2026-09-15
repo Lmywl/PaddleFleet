@@ -1172,7 +1172,9 @@ class HyperBodyForConditionalGeneration(HyperBodyPretrainedModel):
                     for j in range(len(cu_np) - 1)
                 ]
             )
-            position_ids = paddle.to_tensor(pos_np[None, :]).cuda()
+            position_ids = paddle.to_tensor(
+                pos_np[None, :], place=input_ids.place
+            )
 
         input_dict = {
             "input_ids": input_ids,

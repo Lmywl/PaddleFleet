@@ -22,6 +22,7 @@ import_structure = {
     "modeling": [
         "HyperBodyForConditionalGeneration",
         "HyperBodyForCausalLMPipe",
+        "HyperBodyModel",
         "HyperBodyModelPipe",
     ],
 }
