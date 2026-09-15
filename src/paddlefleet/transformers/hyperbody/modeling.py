@@ -732,6 +732,19 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
     materialize a HyperEncoderProvider view; wire the out-projector output width
     to the decoder hidden size and force eager attention.
     """
+    # Recompute: the encoder trunk supports a single degree of freedom --
+    # ``recompute_granularity in (None, "full")`` (HyperEncoderProvider.__post_init__
+    # pins method="uniform"/num_layers=1). Mirror the decoder's *intent*: if the
+    # run recomputes at all (flat granularity is truthy, e.g. "full"/"selective"),
+    # the encoder also does full recompute -- its only mode -- otherwise None.
+    # We deliberately forward only the mapped granularity, NOT method/num_layers:
+    # forwarding a non-"uniform"/non-1 method or num_layers would trip the
+    # provider's strict guard, and the provider derives them itself when on.
+    # Recompute is numerically transparent, so mapping "selective" -> "full" here
+    # only changes memory/speed, never results.
+    _flat_recompute = getattr(config, "recompute_granularity", None)
+    enc_recompute_granularity = "full" if _flat_recompute else None
+
     enc_cfg = HyperEncoderConfig(
         vocab_size=config.encoder_vocab_size,
         hidden_size=config.encoder_hidden_size,
@@ -781,6 +794,8 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
         moe_router_load_balancing_type=config.moe_router_load_balancing_type,
         moe_token_dispatcher_type=config.moe_token_dispatcher_type,
         apply_rope_fusion=config.apply_rope_fusion,
+        # Recompute intent, clamped to the encoder's only supported mode (see above).
+        recompute_granularity=enc_recompute_granularity,
     )
     view = HyperEncoderProvider.from_config(enc_cfg)
     view.language_hidden_size = decoder_hidden
