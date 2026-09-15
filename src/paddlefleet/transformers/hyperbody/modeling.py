@@ -1057,10 +1057,36 @@ class HyperBodyForConditionalGeneration(HyperBodyPretrainedModel):
     """
 
     config_class = HyperBodyConfig
+    # Fleet model: this wraps a PipelineLayer whose params carry logical fleet
+    # names (not HF names). is_fleet=True makes from_pretrained SKIP the identity
+    # dtype append (model_utils.py:3421) -- that block would otherwise emit bogus
+    # `<pipe.-prefixed key> -> <same>, dtype=...` statements whose LHS has no
+    # source in the HF safetensors. _gen_aoa_config already carries every needed
+    # dtype spec (e.g. gate.weight bf16->fp32). Matches the *Pipe entries.
+    is_fleet = True
 
     def __init__(self, config: HyperBodyConfig):
         super().__init__(config)
         self.pipe = build_hyperbody_unified_model(config, num_stages=1)
+
+    # ---- weight name I/O: delegate straight to the pipe -------------------- #
+    # The wrapper holds the graph under ``self.pipe``. The default nn.Layer
+    # recursion would call ``self.pipe.sharded_state_dict(structured_name_prefix=
+    # "pipe.")`` -> the pipe emits ``pipe.{idx}.rest`` keys, then its own
+    # numeric<->logical remap looks up ``pipe.0.embed_tokens.weight`` in a table
+    # built from UN-prefixed names and raises KeyError (R38). Delegating here (no
+    # prefix) makes the wrapper expose the pipe's LOGICAL names verbatim, which is
+    # exactly what ``_gen_aoa_config`` RHS + flex_checkpoint expect (and identical
+    # to what the bare *Pipe entry produces). This unblocks both flex_checkpoint
+    # LOAD (from_pretrained) and SAVE through the wrapper.
+    def state_dict(self, *args, **kwargs):
+        return self.pipe.state_dict(*args, **kwargs)
+
+    def set_state_dict(self, state_dict, *args, **kwargs):
+        return self.pipe.set_state_dict(state_dict, *args, **kwargs)
+
+    def sharded_state_dict(self, *args, **kwargs):
+        return self.pipe.sharded_state_dict(*args, **kwargs)
 
     def forward(
         self,
