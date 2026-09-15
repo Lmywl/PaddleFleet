@@ -760,6 +760,27 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
         hyperencoder_attn_backend=config.hyperencoder_attn_backend,
         hyperencoder_packed_decoder=config.hyperencoder_packed_decoder,
         tensor_model_parallel_size=config.tensor_model_parallel_size,
+        # ---- shared (non-``encoder_``-prefixed) runtime fields --------------- #
+        # Geometry uses the ``encoder_`` prefix, but MoE/parallelism/fusion
+        # runtime knobs are shared flat fields. They must mirror the decoder or
+        # the encoder view silently falls back to HyperEncoderProvider dataclass
+        # defaults, which diverge from the flat HyperBodyConfig defaults:
+        #   * moe_expert_fusion:      flat True  vs provider False -> the AoA
+        #     ``_gen_aoa_config`` encoder branch keys off the flat value and would
+        #     emit grouped_gemm mappings the (non-fused) encoder never builds.
+        #   * router_aux_loss_coef:   flat 0.001 vs base 1e-2 -> 10x aux-loss weight.
+        #   * expert/context_model_parallel_size: encoder would pin EP/CP=1 even
+        #     when the decoder runs EP/CP>1.
+        # ``sequence_parallel`` is intentionally NOT forwarded: the provider
+        # __post_init__ rejects an explicit value and derives it from tp_size.
+        moe_expert_fusion=config.moe_expert_fusion,
+        router_aux_loss_coef=config.router_aux_loss_coef,
+        expert_model_parallel_size=config.expert_model_parallel_size,
+        context_parallel_size=config.context_parallel_size,
+        moe_shared_expert_overlap=config.moe_shared_expert_overlap,
+        moe_router_load_balancing_type=config.moe_router_load_balancing_type,
+        moe_token_dispatcher_type=config.moe_token_dispatcher_type,
+        apply_rope_fusion=config.apply_rope_fusion,
     )
     view = HyperEncoderProvider.from_config(enc_cfg)
     view.language_hidden_size = decoder_hidden
