@@ -43,14 +43,13 @@ Cross-stage seg_method / stage-pinning at the encoder->decoder boundary is
 deferred (the bridge emits variable-length latents and the hidden shape changes
 across the boundary -> cross-stage P2P is not viable yet).
 """
+
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import paddle
-
 from paddle.distributed import fleet
 from paddle.distributed.fleet.meta_parallel import (
     LayerDesc,
@@ -67,9 +66,9 @@ from paddlefleet.models.hyperbody import (
 )
 from paddlefleet.transformer.layer import FleetLayer
 
-from ..model_utils import PretrainedModel
 from ...nn.pp_model import GeneralModelForCausalLMPipe
-from .configuration import CONTEXT_TOKEN, HyperBodyConfig, VIDEO_TOKEN_SENTINEL
+from ..model_utils import PretrainedModel
+from .configuration import HyperBodyConfig
 from .providers import (
     HyperBodyDecoderModelProvider,
     HyperEncoderConfig,
@@ -85,6 +84,7 @@ __all__ = [
     "HyperBodyModelPipe",
     "HyperBodyPretrainedModel",
 ]
+
 
 # ======================================================================= #
 # NEW wrapper layer 1: encoder frontend (pipeline-hostile logic isolated)  #
@@ -126,7 +126,11 @@ class HyperBodyEncoderFrontEnd(FleetLayer):
             config.vocab_size, config.hidden_size
         )
         self.image_encoder = ImageEncoderConv(
-            img_size=728, patch_size=14, in_chans=3, embed_dim=768, out_chans=256
+            img_size=728,
+            patch_size=14,
+            in_chans=3,
+            embed_dim=768,
+            out_chans=256,
         )
         self.audio_encoder = AudioEncoderConv(num_mel_bins=128, embed_dim=768)
         self.projector = MlpProjector(
@@ -235,7 +239,9 @@ class HyperBodyEncoderFrontEnd(FleetLayer):
         auds = audio if audio else [None] * n_seg
         row = context_ids[0]
         return [
-            self._embed_one_context(row[bounds[s] : bounds[s + 1]], imgs[s], auds[s])
+            self._embed_one_context(
+                row[bounds[s] : bounds[s + 1]], imgs[s], auds[s]
+            )
             for s in range(n_seg)
         ]
 
@@ -300,7 +306,10 @@ class HyperBodyEncoderFrontEnd(FleetLayer):
             out = self._forward_packed(context_embeds, use_long_query)
         else:
             out = self._forward_dense(
-                context_embeds, use_long_query, build_dense_mask, prefix_lm_pad_len
+                context_embeds,
+                use_long_query,
+                build_dense_mask,
+                prefix_lm_pad_len,
             )
 
         # Decoder-bound fields ride through the encoder trunk under _hb_dec_*
@@ -315,7 +324,11 @@ class HyperBodyEncoderFrontEnd(FleetLayer):
         return out
 
     def _forward_dense(
-        self, context_embeds, use_long_query, build_dense_mask, prefix_lm_pad_len
+        self,
+        context_embeds,
+        use_long_query,
+        build_dense_mask,
+        prefix_lm_pad_len,
     ):
         # Non-SP [B,S,H] dense-mask path (dp backend).
         bs, n_context, _ = context_embeds.shape
@@ -375,7 +388,9 @@ class HyperBodyEncoderFrontEnd(FleetLayer):
 
         # ---- Normalize context to a per-segment list [C_i, H] ----
         if isinstance(context_embeds, (list, tuple)):
-            seg_ctx = [c.squeeze(0) if c.ndim == 3 else c for c in context_embeds]
+            seg_ctx = [
+                c.squeeze(0) if c.ndim == 3 else c for c in context_embeds
+            ]
             n_contexts = [int(c.shape[0]) for c in seg_ctx]
             hidden = int(seg_ctx[0].shape[1])
         else:
@@ -549,10 +564,10 @@ class HyperBodySublayersSpec:
     """Flat spec list for the unified model (encoder + bridge + decoder)."""
 
     encoder_frontend: LayerSpec = None
-    encoder_layers: List[LayerSpec] = field(default_factory=list)
+    encoder_layers: list[LayerSpec] = field(default_factory=list)
     bridge: LayerSpec = None
     decoder_embedding: LayerSpec = None
-    decoder_layers: List[LayerSpec] = field(default_factory=list)
+    decoder_layers: list[LayerSpec] = field(default_factory=list)
     layer_norm: LayerSpec = None
     lm_head: LayerSpec = None
 
@@ -582,9 +597,7 @@ class HyperBodyUnifiedModel(PipelineLayer):
             del kwargs["tie_word_embeddings"]
 
         topology = (
-            None
-            if pp == 1
-            else fleet.get_hybrid_communicate_group().topology()
+            None if pp == 1 else fleet.get_hybrid_communicate_group().topology()
         )
         super().__init__(
             layers=self.layers,
@@ -603,7 +616,10 @@ class HyperBodyUnifiedModel(PipelineLayer):
         return [x["layer"] for x in self._sequential_layers]
 
     def get_sequential_name_prefixes(self):
-        return {str(i): x["name_prefix"] for i, x in enumerate(self._sequential_layers)}
+        return {
+            str(i): x["name_prefix"]
+            for i, x in enumerate(self._sequential_layers)
+        }
 
     def get_layer_desc_list(self, spec: HyperBodySublayersSpec):
         layers = []
@@ -615,7 +631,9 @@ class HyperBodyUnifiedModel(PipelineLayer):
             self.add_sequential_layer(
                 layers, LayerDesc(enc_layer), f"encoder.layers.{i}"
             )
-        self.add_sequential_layer(layers, LayerDesc(spec.bridge), "encoder.bridge")
+        self.add_sequential_layer(
+            layers, LayerDesc(spec.bridge), "encoder.bridge"
+        )
         # --- decoder region (name_prefix="model") ---
         self.add_sequential_layer(
             layers, LayerDesc(spec.decoder_embedding), "model"
@@ -706,7 +724,6 @@ class HyperBodyUnifiedModel(PipelineLayer):
             else:
                 renamed[k] = v
         return renamed
-
 
 
 # ======================================================================= #
@@ -812,7 +829,9 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
     return view
 
 
-def build_hyperbody_unified_model(config: HyperBodyConfig, *, num_stages=1, loss_fn=None):
+def build_hyperbody_unified_model(
+    config: HyperBodyConfig, *, num_stages=1, loss_fn=None
+):
     """Assemble the unified single-PipelineLayer model.
 
     Mirrors ``build_hyperbody_decoder_model`` (narrowed ``gpt_builder``): build
@@ -1013,20 +1032,34 @@ class HyperBodyPretrainedModel(PretrainedModel):
             "audio_encoder.conv2.bias",
         ):
             st.append(f"{enc}.{name} -> encoder.{name}")
-        st.append(f"{enc}.projector.layers.weight^T -> encoder.projector.layers.weight")
-        st.append(f"{enc}.projector.layers.bias -> encoder.projector.layers.bias")
-        st.append(f"{enc_dec}.embed_tokens.weight -> encoder.embed_tokens.weight")
-        st.append(f"{enc}.decoder.query_short.weight -> encoder.query_short.weight")
-        st.append(f"{enc}.decoder.query_long.weight -> encoder.query_long.weight")
+        st.append(
+            f"{enc}.projector.layers.weight^T -> encoder.projector.layers.weight"
+        )
+        st.append(
+            f"{enc}.projector.layers.bias -> encoder.projector.layers.bias"
+        )
+        st.append(
+            f"{enc_dec}.embed_tokens.weight -> encoder.embed_tokens.weight"
+        )
+        st.append(
+            f"{enc}.decoder.query_short.weight -> encoder.query_short.weight"
+        )
+        st.append(
+            f"{enc}.decoder.query_long.weight -> encoder.query_long.weight"
+        )
         # bridge: encoder backbone final norm + encoder->LLM output projection
         st.append(f"{enc_dec}.norm.weight -> encoder.bridge.final_norm.weight")
-        st.append("model.projector.weight^T -> encoder.bridge.out_projector.weight")
+        st.append(
+            "model.projector.weight^T -> encoder.bridge.out_projector.weight"
+        )
         st.append("model.projector.bias -> encoder.bridge.out_projector.bias")
 
         for L in range(enc_layers):
             hf = f"{enc_dec}.layers.{L}"
             pd = f"encoder.layers.{L}"
-            st.append(f"{hf}.input_layernorm.weight -> {pd}.input_layernorm.weight")
+            st.append(
+                f"{hf}.input_layernorm.weight -> {pd}.input_layernorm.weight"
+            )
             st.append(
                 f"{hf}.post_attention_layernorm.weight -> {pd}.post_attention_layernorm.weight"
             )
@@ -1035,13 +1068,17 @@ class HyperBodyPretrainedModel(PretrainedModel):
                 f"{hf}.self_attn.v_proj.weight^T -> {pd}.self_attn.qkv_proj.weight, "
                 f"fused_qkv, num_heads={enc_nh}, num_key_value_groups={enc_kvh}"
             )
-            st.append(f"{hf}.self_attn.o_proj.weight^T -> {pd}.self_attn.o_proj.weight")
+            st.append(
+                f"{hf}.self_attn.o_proj.weight^T -> {pd}.self_attn.o_proj.weight"
+            )
             if L in enc_dense:
                 st.append(
                     f"{hf}.mlp.gate_proj.weight^T, {hf}.mlp.up_proj.weight^T "
                     f"-> {pd}.mlp.up_gate_proj.weight, fused_ffn"
                 )
-                st.append(f"{hf}.mlp.down_proj.weight^T -> {pd}.mlp.down_proj.weight")
+                st.append(
+                    f"{hf}.mlp.down_proj.weight^T -> {pd}.mlp.down_proj.weight"
+                )
                 continue
             st.append(
                 f"{hf}.mlp.gate.weight -> {pd}.mlp.gate.weight, "
@@ -1080,7 +1117,6 @@ class HyperBodyPretrainedModel(PretrainedModel):
                 ]
 
         return {"aoa_statements": st}
-
 
 
 class HyperBodyModelDist(HyperBodyPretrainedModel):
@@ -1151,15 +1187,15 @@ class HyperBodyForConditionalGeneration(HyperBodyPretrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[paddle.Tensor] = None,
-        context_ids: Optional[paddle.Tensor] = None,
+        input_ids: paddle.Tensor | None = None,
+        context_ids: paddle.Tensor | None = None,
         image=None,
         audio=None,
         use_long_query: bool = False,
-        labels: Optional[paddle.Tensor] = None,
-        attn_mask_startend_row_indices: Optional[paddle.Tensor] = None,
-        position_ids: Optional[paddle.Tensor] = None,
-        cu_seqlens: Optional[paddle.Tensor] = None,
+        labels: paddle.Tensor | None = None,
+        attn_mask_startend_row_indices: paddle.Tensor | None = None,
+        position_ids: paddle.Tensor | None = None,
+        cu_seqlens: paddle.Tensor | None = None,
         cu_seqlens_context=None,
         **kwargs,
     ):
@@ -1169,10 +1205,11 @@ class HyperBodyForConditionalGeneration(HyperBodyPretrainedModel):
             # decoder segment boundaries. cu_seqlens is a [num_seg + 1] int32
             # vector of cumulative lengths over the packed decoder token axis
             # (ΣS == input_ids.shape[-1]).
+            import numpy as _np
+
             from paddlefleet.transformer.multi_token_prediction import (
                 build_startend_row_indices_from_cu_seqlens,
             )
-            import numpy as _np
 
             total_len = int(input_ids.shape[-1])
             # [1, 1, ΣS, 1] int32: each token records its own segment `end`

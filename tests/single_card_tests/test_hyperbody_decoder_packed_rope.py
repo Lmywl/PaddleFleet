@@ -37,7 +37,10 @@ def test_decoder_packed_rope_defaults_to_hyperencoder_packed_decoder():
         cfg = HyperBodyConfig(hyperencoder_packed_decoder=packed)
         assert cfg.decoder_packed_rope is None
         view = _build_decoder_view(cfg)
-        assert view.packed_decoder_rope is packed, (packed, view.packed_decoder_rope)
+        assert view.packed_decoder_rope is packed, (
+            packed,
+            view.packed_decoder_rope,
+        )
 
 
 def test_decoder_packed_rope_explicit_overrides_fallback():
@@ -61,7 +64,8 @@ def test_triton_backend_requires_packed_decoder():
     raised = False
     try:
         HyperBodyConfig(
-            hyperencoder_attn_backend="triton", hyperencoder_packed_decoder=False
+            hyperencoder_attn_backend="triton",
+            hyperencoder_packed_decoder=False,
         )
     except ValueError as e:
         assert "requires hyperencoder_packed_decoder" in str(e)
