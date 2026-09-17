@@ -321,6 +321,21 @@ class HyperBodyConfig(PretrainedConfig):
         self.hyperencoder_packed_decoder = hyperencoder_packed_decoder
         self.decoder_packed_rope = decoder_packed_rope
 
+        # Reject the triton frontend without packed decoding at construction time.
+        # A non-packed decoder builds a dense attention mask, but the 'triton'
+        # backend routes the trunk through PrefixLMTritonCore, which rejects an
+        # explicit attention_mask and would otherwise only fail at the first
+        # forward. Fail loudly here instead.
+        if (
+            self.hyperencoder_attn_backend == "triton"
+            and not self.hyperencoder_packed_decoder
+        ):
+            raise ValueError(
+                "hyperencoder_attn_backend='triton' requires "
+                "hyperencoder_packed_decoder=True (PrefixLMTritonCore does not "
+                "accept a dense attention mask)."
+            )
+
         # ================= BRIDGE =================
         self.image_token_id = image_token_id
         self.video_token_id = video_token_id

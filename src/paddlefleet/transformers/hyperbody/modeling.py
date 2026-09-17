@@ -798,6 +798,11 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
         moe_router_load_balancing_type=config.moe_router_load_balancing_type,
         moe_token_dispatcher_type=config.moe_token_dispatcher_type,
         apply_rope_fusion=config.apply_rope_fusion,
+        # Mirror the decoder's routed-scaling learnability: when the flat config
+        # turns it on, the decoder's moe_router allocates a learnable
+        # ``routed_scaling_factor_param``. Not forwarding it here would leave the
+        # encoder on a fixed scale while the decoder learns one -> silent divergence.
+        routed_scaling_factor_learnable=config.routed_scaling_factor_learnable,
         # Recompute intent, clamped to the encoder's only supported mode (see above).
         recompute_granularity=enc_recompute_granularity,
     )
