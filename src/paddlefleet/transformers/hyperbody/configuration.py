@@ -35,6 +35,8 @@ defaults -- see ``HyperBodyDecoderConfig`` docstring step 2).
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from ..configuration_utils import PretrainedConfig
 
 __all__ = [
@@ -220,6 +222,11 @@ class HyperBodyConfig(PretrainedConfig):
         hyperencoder_seq_align: int = 128,
         hyperencoder_attn_backend: str = "dp",
         hyperencoder_packed_decoder: bool = False,
+        # Decoder packed-RoPE gate, decoupled from ``hyperencoder_packed_decoder``.
+        # ``None`` (default) => fall back to ``hyperencoder_packed_decoder`` so the
+        # current behavior is unchanged; set explicitly to control the two knobs
+        # independently.
+        decoder_packed_rope: Optional[bool] = None,
         # ===================== BRIDGE =====================
         image_token_id: int = CONTEXT_TOKEN,
         video_token_id: int = VIDEO_TOKEN_SENTINEL,
@@ -312,6 +319,7 @@ class HyperBodyConfig(PretrainedConfig):
         self.hyperencoder_seq_align = hyperencoder_seq_align
         self.hyperencoder_attn_backend = hyperencoder_attn_backend
         self.hyperencoder_packed_decoder = hyperencoder_packed_decoder
+        self.decoder_packed_rope = decoder_packed_rope
 
         # ================= BRIDGE =================
         self.image_token_id = image_token_id

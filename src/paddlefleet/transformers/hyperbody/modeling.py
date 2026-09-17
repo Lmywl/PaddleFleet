@@ -74,6 +74,7 @@ from .providers import (
     HyperBodyDecoderModelProvider,
     HyperEncoderConfig,
     HyperEncoderProvider,
+    _reject_unsupported_decoder_branches,
 )
 
 __all__ = [
@@ -720,9 +721,12 @@ def _build_decoder_view(config: HyperBodyConfig):
     # Packed decoder RoPE gate: when the encoder runs packed, the decoder is fed
     # a real packed [1, ΣS] layout, so RoPE must restart per segment. The shared
     # GPTEmbedding rope call reads this flag (default off => no behavior change
-    # for any other model).
+    # for any other model). ``decoder_packed_rope`` decouples this knob from
+    # ``hyperencoder_packed_decoder``; when unset (None) it falls back to the
+    # encoder flag, so the current config behavior is unchanged.
+    _pr = getattr(config, "decoder_packed_rope", None)
     view.packed_decoder_rope = bool(
-        getattr(config, "hyperencoder_packed_decoder", False)
+        config.hyperencoder_packed_decoder if _pr is None else _pr
     )
     return view
 
@@ -812,7 +816,23 @@ def build_hyperbody_unified_model(config: HyperBodyConfig, *, num_stages=1, loss
     ``HyperBodyUnifiedModel`` root LayerSpec and materialize via
     ``build_spec_layer``.
     """
+    # #1: this phase only supports PP=1. Reject both an explicit num_stages!=1
+    # and a config that requests pipeline_model_parallel_size>1 (the builder
+    # hardcodes num_stages=1 downstream, so an unguarded PP>1 config would be
+    # silently ignored rather than honored).
+    pp_size = getattr(config, "pipeline_model_parallel_size", 1)
+    if num_stages != 1 or (pp_size is not None and pp_size > 1):
+        raise NotImplementedError(
+            "HyperBody unified model only supports PP=1 in this phase."
+        )
+
     decoder_view = _build_decoder_view(config)
+
+    # #4: mirror the standalone decoder's rejection guards (MTP /
+    # separate_mtp_headloss / EmptyLayer head|tail / ringmoe / meta-device) so
+    # the unified builder fails loudly on unsupported branches too. Current
+    # production configs trigger none of these => behavior unchanged.
+    _reject_unsupported_decoder_branches(decoder_view)
 
     gpt_spec = get_gpt_spec(
         config=decoder_view,
@@ -1133,11 +1153,11 @@ class HyperBodyForConditionalGeneration(HyperBodyPretrainedModel):
         use_long_query: bool = False,
         labels: Optional[paddle.Tensor] = None,
         attn_mask_startend_row_indices: Optional[paddle.Tensor] = None,
+        position_ids: Optional[paddle.Tensor] = None,
         cu_seqlens: Optional[paddle.Tensor] = None,
         cu_seqlens_context=None,
         **kwargs,
     ):
-        position_ids = None
         if cu_seqlens is not None:
             # Packed decoder: derive both the block-diagonal causal flashmask
             # boundaries and the per-segment reset RoPE position_ids from the

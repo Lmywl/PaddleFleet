@@ -62,6 +62,7 @@ __all__ = [
     "HyperEncoderProvider",
     "HyperBodyDecoderModelProvider",
     "build_hyperbody_decoder_model",
+    "_reject_unsupported_decoder_branches",
 ]
 
 # HyperEncoder geometry defaults (mirrored here so the provider path is
@@ -162,6 +163,27 @@ class HyperEncoderConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
 
+def _reject_unsupported_decoder_branches(config):
+    """Reject decoder builder branches this model does not implement.
+
+    Shared by :func:`build_hyperbody_decoder_model` (standalone decoder) and
+    ``build_hyperbody_unified_model`` (unified single-PipelineLayer). Every
+    branch listed here is unused by HyperBody; silently skipping would fail
+    silently later, so each is turned into an explicit ``NotImplementedError``.
+    Current production configs trigger none of these, so behavior is unchanged.
+    """
+    if getattr(config, "mtp_num_layers", None):
+        raise NotImplementedError("HyperBody decoder has no MTP layers.")
+    if getattr(config, "separate_mtp_headloss", False):
+        raise NotImplementedError("HyperBody decoder does not use separate_mtp_headloss.")
+    if config.num_empty_layers_add_in_head or config.num_empty_layers_add_in_tail:
+        raise NotImplementedError("HyperBody decoder inserts no EmptyLayer (pp split relies on seg_method).")
+    if getattr(config, "moe_token_dispatcher_type", None) == "ringmoe":
+        raise NotImplementedError("ringmoe needs world-level subgroup init, not supported by this model.")
+    if getattr(config, "init_model_with_meta_device", False):
+        raise NotImplementedError("HyperBody decoder does not use meta-device init.")
+
+
 def build_hyperbody_decoder_model(config, *, num_stages: int, loss_fn=None):
     """Assembly: fleet layer spec -> ``get_gpt_spec`` -> ``build_spec_layer``.
 
@@ -176,16 +198,7 @@ def build_hyperbody_decoder_model(config, *, num_stages: int, loss_fn=None):
         loss_fn: defaults to ``LanguageLoss(config)`` (matching ``gpt_builder``).
     """
     # These branches are unused by this model; silently skipping would fail silently later.
-    if getattr(config, "mtp_num_layers", None):
-        raise NotImplementedError("HyperBody decoder has no MTP layers.")
-    if getattr(config, "separate_mtp_headloss", False):
-        raise NotImplementedError("HyperBody decoder does not use separate_mtp_headloss.")
-    if config.num_empty_layers_add_in_head or config.num_empty_layers_add_in_tail:
-        raise NotImplementedError("HyperBody decoder inserts no EmptyLayer (pp split relies on seg_method).")
-    if getattr(config, "moe_token_dispatcher_type", None) == "ringmoe":
-        raise NotImplementedError("ringmoe needs world-level subgroup init, not supported by this model.")
-    if getattr(config, "init_model_with_meta_device", False):
-        raise NotImplementedError("HyperBody decoder does not use meta-device init.")
+    _reject_unsupported_decoder_branches(config)
 
     gpt_spec = get_gpt_spec(
         config=config,
