@@ -338,8 +338,13 @@ class HyperBodyConfig(PretrainedConfig):
         # backend routes the trunk through PrefixLMTritonCore, which rejects an
         # explicit attention_mask and would otherwise only fail at the first
         # forward. Fail loudly here instead.
+        #
+        # Match case-insensitively to mirror ``encoder_attn_backend`` /
+        # ``use_triton_encoder_attn`` (both lower-case the field before
+        # comparing); otherwise ``'TRITON'`` would bypass this guard and only
+        # fail at the first forward.
         if (
-            self.hyperencoder_attn_backend == "triton"
+            str(self.hyperencoder_attn_backend).lower() == "triton"
             and not self.hyperencoder_packed_decoder
         ):
             raise ValueError(

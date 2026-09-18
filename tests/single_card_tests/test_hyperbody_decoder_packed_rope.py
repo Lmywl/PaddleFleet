@@ -72,6 +72,19 @@ def test_triton_backend_requires_packed_decoder():
         raised = True
     assert raised, "triton + non-packed should raise ValueError"
 
+    # The guard is case-insensitive (mirrors encoder_attn_backend), so an
+    # upper-cased 'TRITON' + non-packed must also be rejected at construction.
+    raised = False
+    try:
+        HyperBodyConfig(
+            hyperencoder_attn_backend="TRITON",
+            hyperencoder_packed_decoder=False,
+        )
+    except ValueError as e:
+        assert "requires hyperencoder_packed_decoder" in str(e)
+        raised = True
+    assert raised, "TRITON + non-packed should raise ValueError"
+
     # triton + packed is accepted.
     cfg = HyperBodyConfig(
         hyperencoder_attn_backend="triton", hyperencoder_packed_decoder=True
