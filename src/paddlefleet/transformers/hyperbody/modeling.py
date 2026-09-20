@@ -68,7 +68,7 @@ from paddlefleet.transformer.layer import FleetLayer
 
 from ...nn.pp_model import GeneralModelForCausalLMPipe
 from ..model_utils import PretrainedModel
-from .configuration import HyperBodyConfig
+from .configuration import DECODER_VIEW_KEYS, HyperBodyConfig
 from .providers import (
     HyperBodyDecoderModelProvider,
     HyperEncoderConfig,
@@ -730,8 +730,32 @@ class HyperBodyUnifiedModel(PipelineLayer):
 # View builders + top-level builder                                        #
 # ======================================================================= #
 def _build_decoder_view(config: HyperBodyConfig):
-    """Materialize the decoder GPTConfig view (bare-named fields) + multimodal."""
-    view = HyperBodyDecoderModelProvider.from_config(config)
+    """Materialize the decoder GPTConfig view (bare-named fields) + multimodal.
+
+    LOSS-EQUIVALENCE MERGE: ``HyperBodyDecoderModelProvider.from_config`` consumes
+    ``namespace.__dict__`` directly (``register_attributes`` iterates it). Under
+    the nested config the top-level ``__dict__`` no longer carries the decoder
+    geometry (it lives in ``config.decoder_config``), so we reconstruct the exact
+    field set the previous flat config fed the provider: ``{top-level globals}``
+    (the routed llm_meta + fusion/parallelism/token-id switches, minus the two
+    sub-config OBJECTS) overlaid with ``{decoder_config geometry}`` pulled via the
+    explicit :data:`DECODER_VIEW_KEYS` allowlist. Geometry wins on key collisions,
+    so the merged namespace == the old flat config's decoder-relevant ``__dict__``
+    and the materialized view (hence loss) is bit-identical.
+    """
+    import types
+
+    merged = {
+        k: v
+        for k, v in config.__dict__.items()
+        if k not in ("decoder_config", "encoder_config")
+    }
+    dec = config.decoder_config
+    for key in DECODER_VIEW_KEYS:
+        merged[key] = dec.__dict__[key]
+    namespace = types.SimpleNamespace(**merged)
+
+    view = HyperBodyDecoderModelProvider.from_config(namespace)
     view.multimodal_embedding = True
     view.image_token_id = config.image_token_id
     view.video_token_id = config.video_token_id
@@ -743,7 +767,9 @@ def _build_decoder_view(config: HyperBodyConfig):
     # encoder flag, so the current config behavior is unchanged.
     _pr = getattr(config, "decoder_packed_rope", None)
     view.packed_decoder_rope = bool(
-        config.hyperencoder_packed_decoder if _pr is None else _pr
+        config.encoder_config.hyperencoder_packed_decoder
+        if _pr is None
+        else _pr
     )
     return view
 
@@ -766,48 +792,54 @@ def _build_encoder_view(config: HyperBodyConfig, decoder_hidden: int):
     _flat_recompute = getattr(config, "recompute_granularity", None)
     enc_recompute_granularity = "full" if _flat_recompute else None
 
+    enc = config.encoder_config
     enc_cfg = HyperEncoderConfig(
-        vocab_size=config.encoder_vocab_size,
-        hidden_size=config.encoder_hidden_size,
-        intermediate_size=config.encoder_intermediate_size,
-        num_hidden_layers=config.encoder_num_hidden_layers,
-        num_attention_heads=config.encoder_num_attention_heads,
-        num_key_value_heads=config.encoder_num_key_value_heads,
-        rms_norm_eps=config.encoder_rms_norm_eps,
-        rope_theta=config.encoder_rope_theta,
-        attention_dropout=config.encoder_attention_dropout,
-        hidden_dropout_prob=config.encoder_hidden_dropout_prob,
-        attention_bias=config.encoder_attention_bias,
-        moe_intermediate_size=config.encoder_moe_intermediate_size,
-        n_routed_experts=config.encoder_n_routed_experts,
-        num_experts_per_tok=config.encoder_num_experts_per_tok,
-        n_shared_experts=config.encoder_n_shared_experts,
-        first_k_dense_replace=config.encoder_first_k_dense_replace,
-        routed_scaling_factor=config.encoder_routed_scaling_factor,
-        n_group=config.encoder_n_group,
-        topk_group=config.encoder_topk_group,
-        norm_topk_prob=config.encoder_norm_topk_prob,
-        scoring_func=config.encoder_scoring_func,
-        topk_method=config.encoder_topk_method,
-        hyperencoder_query_lengths=config.hyperencoder_query_lengths,
-        hyperencoder_seq_align=config.hyperencoder_seq_align,
-        hyperencoder_attn_backend=config.hyperencoder_attn_backend,
-        hyperencoder_packed_decoder=config.hyperencoder_packed_decoder,
+        vocab_size=enc.vocab_size,
+        hidden_size=enc.hidden_size,
+        intermediate_size=enc.intermediate_size,
+        num_hidden_layers=enc.num_hidden_layers,
+        num_attention_heads=enc.num_attention_heads,
+        num_key_value_heads=enc.num_key_value_heads,
+        rms_norm_eps=enc.rms_norm_eps,
+        rope_theta=enc.rope_theta,
+        attention_dropout=enc.attention_dropout,
+        hidden_dropout_prob=enc.hidden_dropout_prob,
+        attention_bias=enc.attention_bias,
+        moe_intermediate_size=enc.moe_intermediate_size,
+        n_routed_experts=enc.n_routed_experts,
+        num_experts_per_tok=enc.num_experts_per_tok,
+        n_shared_experts=enc.n_shared_experts,
+        first_k_dense_replace=enc.first_k_dense_replace,
+        routed_scaling_factor=enc.routed_scaling_factor,
+        n_group=enc.n_group,
+        topk_group=enc.topk_group,
+        norm_topk_prob=enc.norm_topk_prob,
+        scoring_func=enc.scoring_func,
+        topk_method=enc.topk_method,
+        hyperencoder_query_lengths=enc.hyperencoder_query_lengths,
+        hyperencoder_seq_align=enc.hyperencoder_seq_align,
+        hyperencoder_attn_backend=enc.hyperencoder_attn_backend,
+        hyperencoder_packed_decoder=enc.hyperencoder_packed_decoder,
         tensor_model_parallel_size=config.tensor_model_parallel_size,
         # ---- shared (non-``encoder_``-prefixed) runtime fields --------------- #
         # Geometry uses the ``encoder_`` prefix, but MoE/parallelism/fusion
-        # runtime knobs are shared flat fields. They must mirror the decoder or
-        # the encoder view silently falls back to HyperEncoderProvider dataclass
-        # defaults, which diverge from the flat HyperBodyConfig defaults:
-        #   * moe_expert_fusion:      flat True  vs provider False -> the AoA
-        #     ``_gen_aoa_config`` encoder branch keys off the flat value and would
-        #     emit grouped_gemm mappings the (non-fused) encoder never builds.
-        #   * router_aux_loss_coef:   flat 0.001 vs base 1e-2 -> 10x aux-loss weight.
+        # runtime knobs are GLOBAL and SHARED: the encoder and decoder pools read
+        # the exact same top-level ``HyperBodyConfig`` values. They must be
+        # forwarded here or the encoder view silently falls back to
+        # HyperEncoderProvider dataclass defaults, which diverge from the global
+        # HyperBodyConfig values:
+        #   * moe_expert_fusion / moe_deep_gemm: the encoder MoE kernel path MUST
+        #     match the decoder. ``_gen_aoa_config`` also keys its encoder branch
+        #     off ``config.moe_expert_fusion`` (same global), so the checkpoint
+        #     weight layout (fused grouped_gemm vs per-expert) stays consistent
+        #     between the two pools.
+        #   * router_aux_loss_coef:   global 0.001 vs base 1e-2 -> 10x aux-loss weight.
         #   * expert/context_model_parallel_size: encoder would pin EP/CP=1 even
         #     when the decoder runs EP/CP>1.
         # ``sequence_parallel`` is intentionally NOT forwarded: the provider
         # __post_init__ rejects an explicit value and derives it from tp_size.
         moe_expert_fusion=config.moe_expert_fusion,
+        moe_deep_gemm=getattr(config, "moe_deep_gemm", True),
         router_aux_loss_coef=config.router_aux_loss_coef,
         expert_model_parallel_size=config.expert_model_parallel_size,
         context_parallel_size=config.context_parallel_size,
@@ -952,10 +984,11 @@ class HyperBodyPretrainedModel(PretrainedModel):
         st = []
 
         # =============== DECODER region (HF model.* / lm_head) =============== #
-        dec_experts = config.n_routed_experts
-        dec_freq = config.moe_layer_freq
-        dec_nh = config.num_attention_heads
-        dec_kvh = config.num_key_value_heads
+        dec_cfg = config.decoder_config
+        dec_experts = dec_cfg.n_routed_experts
+        dec_freq = dec_cfg.moe_layer_freq
+        dec_nh = dec_cfg.num_attention_heads
+        dec_kvh = dec_cfg.num_key_value_heads
 
         st += [
             "model.embed_tokens.weight -> model.embedding.embed_tokens.weight",
@@ -966,7 +999,7 @@ class HyperBodyPretrainedModel(PretrainedModel):
         else:
             st.append("lm_head.weight -> model.lm_head.weight")
 
-        for L in range(config.num_hidden_layers):
+        for L in range(dec_cfg.num_hidden_layers):
             hf = f"model.layers.{L}"
             pd = f"model.layers.{L}"
             st += [
@@ -1014,11 +1047,12 @@ class HyperBodyPretrainedModel(PretrainedModel):
         # top-level ``model.projector.*`` (bridge).
         enc = "model.encoder"
         enc_dec = "model.encoder.decoder.model.model"
-        enc_layers = config.encoder_num_hidden_layers
-        enc_experts = config.encoder_n_routed_experts
-        enc_nh = config.encoder_num_attention_heads
-        enc_kvh = config.encoder_num_key_value_heads
-        enc_dense = set(range(int(config.encoder_first_k_dense_replace or 0)))
+        enc_cfg = config.encoder_config
+        enc_layers = enc_cfg.num_hidden_layers
+        enc_experts = enc_cfg.n_routed_experts
+        enc_nh = enc_cfg.num_attention_heads
+        enc_kvh = enc_cfg.num_key_value_heads
+        enc_dense = set(range(int(enc_cfg.first_k_dense_replace or 0)))
 
         # front-end towers / embedding / query tables (conv+pos_embed no ^T)
         for name in (
@@ -1102,6 +1136,10 @@ class HyperBodyPretrainedModel(PretrainedModel):
                 f"{hf}.mlp.experts.$EXPERT_ID.down_proj.weight^T "
                 f"-> {pd}.mlp.experts.$EXPERT_ID.down_proj.weight"
             )
+            # Encoder AoA fusion mapping MUST match the runtime encoder view
+            # (``_build_encoder_view`` reads the same global ``moe_expert_fusion``).
+            # A fused encoder packs experts into grouped_gemm_experts.weight1/2;
+            # an unfused one keeps per-expert tensors.
             if config.moe_expert_fusion:
                 w1 = ",".join(
                     f"{pd}.mlp.experts.{e}.up_gate_proj.weight"

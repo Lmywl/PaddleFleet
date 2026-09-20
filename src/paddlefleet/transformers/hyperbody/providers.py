@@ -14,10 +14,10 @@
 
 """HF-style config -> ``GPTConfig`` providers for the unified HyperBody model.
 
-This module makes ``transformers/hyperbody`` self-contained: it copies the two
+This module makes ``transformers/hyperbody`` self-contained: it copies the
 provider paths the unified model needs (previously imported from
-``transformers/hyperbody_decoder`` and ``transformers/hyperencoder``) so the
-unified modeling no longer reaches into those two packages.
+``transformers/hyperencoder``) so the unified modeling no longer reaches into
+that package.
 
 * :class:`HyperEncoderConfig` -- a **transient** config used by
   ``modeling._build_encoder_view`` to strip the ``encoder_`` prefix off the flat
@@ -34,8 +34,7 @@ unified modeling no longer reaches into those two packages.
   completeness (it assembles a standalone decoder ``GPTModel``).
 
 The layer specs come from ``paddlefleet.models.hyperbody`` (the self-contained
-component package), NOT from ``models/hyperbody_decoder`` or
-``models/hyperencoder``.
+component package), NOT from ``models/hyperencoder``.
 """
 
 from __future__ import annotations
