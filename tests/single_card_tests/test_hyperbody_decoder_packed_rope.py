@@ -12,17 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit coverage for the ``decoder_packed_rope`` switch on ``HyperBodyConfig``.
+"""Unit coverage for the decoder ``packed_decoder_rope`` gate on HyperBody.
 
-``decoder_packed_rope`` decouples the decoder's per-segment RoPE reset from
-``hyperencoder_packed_decoder``:
-  * unset (``None``)  -> falls back to ``hyperencoder_packed_decoder`` so the
-    historical behavior is unchanged;
-  * set explicitly    -> overrides, independently of the encoder flag.
+Under the nested (``sub_configs``) config, ``packed_decoder_rope`` on the decoder
+view tracks ``encoder_config.hyperencoder_packed_decoder`` directly (the two move
+together; there is no separate top-level override knob). This module asserts:
+  * ``modeling._build_decoder_view`` sets ``packed_decoder_rope`` == the encoder
+    flag for both True/False;
+  * the ``triton`` frontend without a packed decoder is rejected at config
+    construction (case-insensitive).
 
-These are pure config-view assertions (no GPU / no distributed init): they
-exercise ``modeling._build_decoder_view`` which only materializes the decoder
-provider view and sets ``packed_decoder_rope``.
+These are pure config-view assertions (no GPU / no distributed init). Geometry is
+REQUIRED by the sensitive-info policy, so configs are built with explicit
+``decoder_config=`` / ``encoder_config=`` sub-configs.
 """
 
 import sys
@@ -30,12 +32,49 @@ import sys
 from paddlefleet.transformers.hyperbody.configuration import HyperBodyConfig
 from paddlefleet.transformers.hyperbody.modeling import _build_decoder_view
 
+# Minimal-but-complete geometry satisfying the REQUIRED sensitive-info fields.
+_DECODER_GEOMETRY = {
+    "vocab_size": 128,
+    "hidden_size": 64,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 4,
+    "intermediate_size": 128,
+    "n_routed_experts": 4,
+    "moe_intermediate_size": 32,
+    "num_experts_per_tok": 2,
+    "n_shared_experts": 1,
+}
+_ENCODER_GEOMETRY = {
+    "vocab_size": 128,
+    "hidden_size": 64,
+    "intermediate_size": 128,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 4,
+    "moe_intermediate_size": 32,
+    "n_routed_experts": 4,
+    "num_experts_per_tok": 2,
+    "n_shared_experts": 1,
+    "first_k_dense_replace": 1,
+    "hyperencoder_query_lengths": (16, 64),
+}
 
-def test_decoder_packed_rope_defaults_to_hyperencoder_packed_decoder():
-    """When unset, ``packed_decoder_rope`` mirrors ``hyperencoder_packed_decoder``."""
+
+def _make_config(hyperencoder_packed_decoder, hyperencoder_attn_backend="dp"):
+    encoder_config = {
+        **_ENCODER_GEOMETRY,
+        "hyperencoder_attn_backend": hyperencoder_attn_backend,
+        "hyperencoder_packed_decoder": hyperencoder_packed_decoder,
+    }
+    return HyperBodyConfig(
+        decoder_config={**_DECODER_GEOMETRY},
+        encoder_config=encoder_config,
+    )
+
+
+def test_packed_decoder_rope_tracks_hyperencoder_packed_decoder():
+    """``packed_decoder_rope`` on the decoder view mirrors the encoder flag."""
     for packed in (True, False):
-        cfg = HyperBodyConfig(hyperencoder_packed_decoder=packed)
-        assert cfg.decoder_packed_rope is None
+        cfg = _make_config(hyperencoder_packed_decoder=packed)
         view = _build_decoder_view(cfg)
         assert view.packed_decoder_rope is packed, (
             packed,
@@ -43,59 +82,30 @@ def test_decoder_packed_rope_defaults_to_hyperencoder_packed_decoder():
         )
 
 
-def test_decoder_packed_rope_explicit_overrides_fallback():
-    """An explicit value wins regardless of ``hyperencoder_packed_decoder``."""
-    for explicit in (True, False):
-        for packed in (True, False):
-            cfg = HyperBodyConfig(
-                hyperencoder_packed_decoder=packed, decoder_packed_rope=explicit
-            )
-            assert cfg.decoder_packed_rope is explicit
-            view = _build_decoder_view(cfg)
-            assert view.packed_decoder_rope is explicit, (
-                explicit,
-                packed,
-                view.packed_decoder_rope,
-            )
-
-
 def test_triton_backend_requires_packed_decoder():
     """The 'triton' frontend without packed decoding is rejected at construction."""
-    raised = False
-    try:
-        HyperBodyConfig(
-            hyperencoder_attn_backend="triton",
-            hyperencoder_packed_decoder=False,
-        )
-    except ValueError as e:
-        assert "requires hyperencoder_packed_decoder" in str(e)
-        raised = True
-    assert raised, "triton + non-packed should raise ValueError"
-
-    # The guard is case-insensitive (mirrors encoder_attn_backend), so an
-    # upper-cased 'TRITON' + non-packed must also be rejected at construction.
-    raised = False
-    try:
-        HyperBodyConfig(
-            hyperencoder_attn_backend="TRITON",
-            hyperencoder_packed_decoder=False,
-        )
-    except ValueError as e:
-        assert "requires hyperencoder_packed_decoder" in str(e)
-        raised = True
-    assert raised, "TRITON + non-packed should raise ValueError"
+    for backend in ("triton", "TRITON"):
+        raised = False
+        try:
+            _make_config(
+                hyperencoder_packed_decoder=False,
+                hyperencoder_attn_backend=backend,
+            )
+        except ValueError as e:
+            assert "requires hyperencoder_packed_decoder" in str(e)
+            raised = True
+        assert raised, f"{backend} + non-packed should raise ValueError"
 
     # triton + packed is accepted.
-    cfg = HyperBodyConfig(
-        hyperencoder_attn_backend="triton", hyperencoder_packed_decoder=True
+    cfg = _make_config(
+        hyperencoder_packed_decoder=True, hyperencoder_attn_backend="triton"
     )
-    assert cfg.hyperencoder_attn_backend == "triton"
+    assert cfg.encoder_config.hyperencoder_attn_backend == "triton"
 
 
 if __name__ == "__main__":
     try:
-        test_decoder_packed_rope_defaults_to_hyperencoder_packed_decoder()
-        test_decoder_packed_rope_explicit_overrides_fallback()
+        test_packed_decoder_rope_tracks_hyperencoder_packed_decoder()
         test_triton_backend_requires_packed_decoder()
     except AssertionError:
         import traceback

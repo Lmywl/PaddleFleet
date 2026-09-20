@@ -762,14 +762,10 @@ def _build_decoder_view(config: HyperBodyConfig):
     # Packed decoder RoPE gate: when the encoder runs packed, the decoder is fed
     # a real packed [1, ΣS] layout, so RoPE must restart per segment. The shared
     # GPTEmbedding rope call reads this flag (default off => no behavior change
-    # for any other model). ``decoder_packed_rope`` decouples this knob from
-    # ``hyperencoder_packed_decoder``; when unset (None) it falls back to the
-    # encoder flag, so the current config behavior is unchanged.
-    _pr = getattr(config, "decoder_packed_rope", None)
+    # for any other model). It tracks the encoder's ``hyperencoder_packed_decoder``
+    # directly (the two always move together for HyperBody).
     view.packed_decoder_rope = bool(
         config.encoder_config.hyperencoder_packed_decoder
-        if _pr is None
-        else _pr
     )
     return view
 

@@ -346,6 +346,21 @@ class HyperBodyEncoderConfig(PretrainedConfig):
         self.hyperencoder_seq_align = int(hyperencoder_seq_align)
         self.hyperencoder_attn_backend = hyperencoder_attn_backend
         self.hyperencoder_packed_decoder = hyperencoder_packed_decoder
+        # The 'triton' frontend installs a PrefixLMTritonCore that only accepts a
+        # packed decoder layout (it errors on a dense attention_mask and needs the
+        # prefix_lm_layout). ``attn_backend.use_packed_decoder`` only rejects
+        # packed+dp, NOT triton+non-packed, so guard that combination here (as the
+        # config once did via __post_init__). Case-insensitive to mirror the
+        # backend normalization elsewhere.
+        if (
+            str(hyperencoder_attn_backend).lower() == "triton"
+            and not hyperencoder_packed_decoder
+        ):
+            raise ValueError(
+                "encoder_config.hyperencoder_attn_backend='triton' requires "
+                "hyperencoder_packed_decoder=True (the triton PrefixLM core only "
+                "supports a packed decoder layout)."
+            )
         super().__init__(**kwargs)
 
     def to_diff_dict(self, saving_file=False):
